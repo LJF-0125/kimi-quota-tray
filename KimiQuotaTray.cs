@@ -249,8 +249,9 @@ namespace KimiQuotaTray
             _http.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
 
             _tray = new NotifyIcon();
-            _tray.Text = "Kimi 额度: 加载中...";
-            _tray.ContextMenuStrip = BuildMenu();
+            _tray.Text = ""; // 正常状态悬停不显示 tooltip；错误时由 SetError 设置原因
+            _tray.ContextMenuStrip = BuildMenu(); // 右键 = 菜单（原始行为）
+            _tray.MouseUp += OnTrayMouseUp;       // 左键 = 详情窗口
             _tray.MouseDoubleClick += OnTrayDoubleClick;
             SetIcon("--", ColorGray);
             _tray.Visible = true;
@@ -283,6 +284,10 @@ namespace KimiQuotaTray
             var refresh = new ToolStripMenuItem("立即刷新");
             refresh.Click += delegate { RefreshAsync(); };
             menu.Items.Add(refresh);
+
+            var detail = new ToolStripMenuItem("额度详情");
+            detail.Click += delegate { ShowDetailWindow(); };
+            menu.Items.Add(detail);
 
             var iconMenu = new ToolStripMenuItem("图标显示");
             AddRadio(iconMenu, _iconSourceItems, "5小时窗口", "window5h",
@@ -398,6 +403,12 @@ namespace KimiQuotaTray
         {
             if (e.Button == MouseButtons.Left)
                 RefreshAsync(); // 双击 = 立即刷新
+        }
+
+        private void OnTrayMouseUp(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+                ShowDetailWindow(); // 左键 = 直接弹详情窗口
         }
 
         // ===================== 定时刷新（规格书 4.2） =====================
@@ -700,13 +711,18 @@ namespace KimiQuotaTray
         private void RenderData(UsagesResponse u)
         {
             _lastData = u;
+            _lastSuccessAt = DateTime.Now;
 
             string text;
             Color color;
             ComputeIcon(u, out text, out color);
             SetIcon(text, color);
-            _tray.Text = BuildTooltip(u);
+            _tray.Text = ""; // 正常状态悬停不显示 tooltip（详情走左键窗口）；错误时由 SetError 设置原因
             CheckAlert(u);
+
+            // 详情窗口开着时同步最新数据
+            if (_detailForm != null && !_detailForm.IsDisposed && _detailForm.Visible)
+                _detailForm.SetContent(BuildDetailText(u));
         }
 
         private void ComputeIcon(UsagesResponse u, out string text, out Color color)
@@ -778,7 +794,7 @@ namespace KimiQuotaTray
                 using (var brush = new SolidBrush(color))
                     g.FillEllipse(brush, 0, 0, 32, 32);
 
-                float size = text.Length >= 3 ? 11f : (text.Length == 2 ? 14f : 18f);
+                float size = text.Length >= 3 ? 15f : (text.Length == 2 ? 20f : 24f);
                 using (var font = new Font("Segoe UI", size, FontStyle.Bold, GraphicsUnit.Pixel))
                 using (var sf = new StringFormat())
                 using (var white = new SolidBrush(Color.White))
@@ -858,64 +874,6 @@ namespace KimiQuotaTray
             return long.TryParse(s, out value);
         }
 
-        private string BuildTooltip(UsagesResponse u)
-        {
-            // 63 字符内放 4 行：文案必须极简（"5h: 89% 15:15重置" 式）
-            var lines = new List<string>();
-
-            var w5 = FindWindow5hDetail(u);
-            if (w5 != null)
-            {
-                int? pct = Percent(w5);
-                lines.Add("5h: " + (pct.HasValue ? pct.Value + "%" : "?") + " " + FmtReset(w5.ResetTime));
-            }
-            else
-            {
-                lines.Add("5h: 无数据");
-            }
-
-            if (u.Usage != null)
-            {
-                lines.Add("周: " + Str(u.Usage.Remaining) + "/" + Str(u.Usage.Limit) +
-                    " " + FmtReset(u.Usage.ResetTime));
-            }
-
-            string monthLine = null;
-            if (u.TotalQuota != null)
-                monthLine = "月: " + Str(u.TotalQuota.Remaining) + "/" + Str(u.TotalQuota.Limit);
-
-            lines.Add(ExtraLine(u.BoosterWallet));
-
-            var withMonth = new List<string>(lines);
-            if (monthLine != null) withMonth.Insert(withMonth.Count - 1, monthLine);
-            string text = string.Join("\n", withMonth.ToArray());
-            if (text.Length > MaxTooltipLength && monthLine != null)
-                text = string.Join("\n", lines.ToArray()); // 超长砍「月总额」行
-            return TruncateTooltip(text);
-        }
-
-        private static string ExtraLine(BoosterWallet w)
-        {
-            if (w == null) return "Ex: 未开通";
-            long? left = ExtraBalanceRaw(w);
-            if (!left.HasValue) return "Ex: 无数据";
-
-            // 余额 ÷ 10^8 = 元，四舍五入到分（全程整数运算）
-            long cents = (left.Value + 500000) / 1000000;
-            string line = "Ex: " + FmtYuanFromCents(cents);
-
-            if (w.MonthlyChargeLimitEnabled && w.MonthlyChargeLimit != null && w.MonthlyUsed != null)
-            {
-                long limitCents, usedCents;
-                if (TryParseLong(w.MonthlyChargeLimit.PriceInCents, out limitCents) &&
-                    TryParseLong(w.MonthlyUsed.PriceInCents, out usedCents))
-                {
-                    line += " 月" + FmtYuanFromCents(usedCents) + "/" + FmtYuanFromCents(limitCents);
-                }
-            }
-            return line;
-        }
-
         private static string FmtYuanFromCents(long cents)
         {
             long yuan = cents / 100;
@@ -923,15 +881,114 @@ namespace KimiQuotaTray
             return "¥" + yuan + (frac > 0 ? "." + frac.ToString("00") : "");
         }
 
-        private static string FmtReset(string resetTime)
+        private static string FmtResetFull(string resetTime)
         {
             DateTimeOffset dto;
             if (string.IsNullOrEmpty(resetTime) || !DateTimeOffset.TryParse(resetTime, out dto))
-                return "重置未知";
-            var local = dto.LocalDateTime;
-            return local.Date == DateTime.Today
-                ? local.ToString("HH:mm") + "重置"
-                : local.ToString("MM-dd") + "重置";
+                return "未知";
+            return dto.LocalDateTime.ToString("MM-dd HH:mm");
+        }
+
+        // 左键「额度详情」：独立详情窗口（右下角弹出、置顶、可常驻，每次刷新后同步更新）
+        private DetailForm _detailForm;
+        private DateTime _lastSuccessAt;
+
+        private void ShowDetailWindow()
+        {
+            if (_detailForm == null || _detailForm.IsDisposed)
+            {
+                _detailForm = new DetailForm();
+                _detailForm.FormClosed += delegate { _detailForm = null; };
+            }
+            _detailForm.SetContent(BuildDetailText(_lastData));
+            if (!_detailForm.Visible) _detailForm.Show();
+            _detailForm.Activate();
+        }
+
+        private string BuildDetailText(UsagesResponse u)
+        {
+            if (u == null) return "暂无数据，请等待刷新或检查网络";
+            var sb = new StringBuilder();
+            var w5 = FindWindow5hDetail(u);
+            if (w5 != null)
+            {
+                int? pct = Percent(w5);
+                sb.Append("5小时窗口: 剩 ").Append(Str(w5.Remaining)).Append('/').Append(Str(w5.Limit));
+                if (pct.HasValue) sb.Append(" (").Append(pct.Value).Append("%)");
+                sb.Append("\n  重置: ").Append(FmtResetFull(w5.ResetTime));
+            }
+            if (u.Usage != null)
+            {
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append("周额度: ").Append(Str(u.Usage.Remaining)).Append('/').Append(Str(u.Usage.Limit));
+                sb.Append("\n  重置: ").Append(FmtResetFull(u.Usage.ResetTime));
+            }
+            if (u.TotalQuota != null)
+            {
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append("月总额度: ").Append(Str(u.TotalQuota.Remaining)).Append('/').Append(Str(u.TotalQuota.Limit));
+            }
+            if (sb.Length > 0) sb.Append('\n');
+            sb.Append("Extra余额: ").Append(ExtraDetail(u.BoosterWallet));
+            if (_lastSuccessAt != DateTime.MinValue)
+                sb.Append("\n\n更新于: ").Append(_lastSuccessAt.ToString("HH:mm:ss"));
+            return sb.ToString();
+        }
+
+        private class DetailForm : Form
+        {
+            private readonly Label _label;
+            private readonly Font _font;
+
+            public DetailForm()
+            {
+                Text = "Kimi 额度详情";
+                FormBorderStyle = FormBorderStyle.FixedToolWindow;
+                StartPosition = FormStartPosition.Manual;
+                MaximizeBox = false;
+                MinimizeBox = false;
+                Width = 300;
+                Height = 250;
+                var wa = Screen.PrimaryScreen.WorkingArea;
+                Location = new Point(wa.Right - Width - 16, wa.Bottom - Height - 16);
+                TopMost = true;
+
+                _font = new Font("Segoe UI", 10F);
+                _label = new Label();
+                _label.Dock = DockStyle.Fill;
+                _label.Padding = new Padding(12);
+                _label.Font = _font;
+                _label.TextAlign = ContentAlignment.TopLeft;
+                Controls.Add(_label);
+            }
+
+            public void SetContent(string text)
+            {
+                _label.Text = text;
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing && _font != null) _font.Dispose();
+                base.Dispose(disposing);
+            }
+        }
+
+        private static string ExtraDetail(BoosterWallet w)
+        {
+            if (w == null) return "未开通";
+            long? left = ExtraBalanceRaw(w);
+            if (!left.HasValue) return "无数据";
+            long cents = (left.Value + 500000) / 1000000;
+            string s = FmtYuanFromCents(cents);
+            if (w.MonthlyChargeLimitEnabled && w.MonthlyChargeLimit != null && w.MonthlyUsed != null)
+            {
+                long limitCents, usedCents;
+                if (TryParseLong(w.MonthlyChargeLimit.PriceInCents, out limitCents) &&
+                    TryParseLong(w.MonthlyUsed.PriceInCents, out usedCents))
+                    s += "\n  本月已用: " + FmtYuanFromCents(usedCents) + " / 上限 " + FmtYuanFromCents(limitCents);
+            }
+            return s;
         }
 
         private static string Str(string s)
