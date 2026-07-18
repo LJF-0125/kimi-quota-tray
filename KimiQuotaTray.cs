@@ -196,7 +196,9 @@ namespace KimiQuotaTray
         private const string ConsoleUrl = "https://www.kimi.com/code/console";
         private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string RunValueName = "KimiQuotaTray";
-        private const int MaxTooltipLength = 127;
+        // .NET Framework 的 NotifyIcon.Text 硬限制是 63 字符（≥64 抛 ArgumentOutOfRangeException），
+        // 不是计划书按新版 Shell 估算的 127 —— 文案必须按 63 排版
+        private const int MaxTooltipLength = 63;
 
         private static readonly string ApiBase = EnvOr("KIMI_CODE_BASE_URL", "https://api.kimi.com");
         private static readonly string OAuthHost =
@@ -858,29 +860,29 @@ namespace KimiQuotaTray
 
         private string BuildTooltip(UsagesResponse u)
         {
+            // 63 字符内放 4 行：文案必须极简（"5h: 89% 15:15重置" 式）
             var lines = new List<string>();
 
             var w5 = FindWindow5hDetail(u);
             if (w5 != null)
             {
                 int? pct = Percent(w5);
-                lines.Add("5小时: 剩" + (pct.HasValue ? pct.Value + "%" : "?") +
-                    " (" + FmtReset(w5.ResetTime) + ")");
+                lines.Add("5h: " + (pct.HasValue ? pct.Value + "%" : "?") + " " + FmtReset(w5.ResetTime));
             }
             else
             {
-                lines.Add("5小时: 无数据");
+                lines.Add("5h: 无数据");
             }
 
             if (u.Usage != null)
             {
-                lines.Add("周额度: " + Str(u.Usage.Remaining) + "/" + Str(u.Usage.Limit) +
-                    " (" + FmtReset(u.Usage.ResetTime) + ")");
+                lines.Add("周: " + Str(u.Usage.Remaining) + "/" + Str(u.Usage.Limit) +
+                    " " + FmtReset(u.Usage.ResetTime));
             }
 
             string monthLine = null;
             if (u.TotalQuota != null)
-                monthLine = "月总额: " + Str(u.TotalQuota.Remaining) + "/" + Str(u.TotalQuota.Limit);
+                monthLine = "月: " + Str(u.TotalQuota.Remaining) + "/" + Str(u.TotalQuota.Limit);
 
             lines.Add(ExtraLine(u.BoosterWallet));
 
@@ -894,13 +896,13 @@ namespace KimiQuotaTray
 
         private static string ExtraLine(BoosterWallet w)
         {
-            if (w == null) return "Extra: 未开通";
+            if (w == null) return "Ex: 未开通";
             long? left = ExtraBalanceRaw(w);
-            if (!left.HasValue) return "Extra: 无数据";
+            if (!left.HasValue) return "Ex: 无数据";
 
             // 余额 ÷ 10^8 = 元，四舍五入到分（全程整数运算）
             long cents = (left.Value + 500000) / 1000000;
-            string line = "Extra: " + FmtYuanFromCents(cents);
+            string line = "Ex: " + FmtYuanFromCents(cents);
 
             if (w.MonthlyChargeLimitEnabled && w.MonthlyChargeLimit != null && w.MonthlyUsed != null)
             {
@@ -908,7 +910,7 @@ namespace KimiQuotaTray
                 if (TryParseLong(w.MonthlyChargeLimit.PriceInCents, out limitCents) &&
                     TryParseLong(w.MonthlyUsed.PriceInCents, out usedCents))
                 {
-                    line += " (本月" + FmtYuanFromCents(usedCents) + "/" + FmtYuanFromCents(limitCents) + ")";
+                    line += " 月" + FmtYuanFromCents(usedCents) + "/" + FmtYuanFromCents(limitCents);
                 }
             }
             return line;
