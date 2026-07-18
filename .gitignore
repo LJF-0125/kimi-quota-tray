@@ -1,4 +1,5 @@
 # 本地文件，不随仓库公开
-计划书.md
+计划书*.md
+设计书*.md
 settings.json
 *.tmp
