@@ -252,7 +252,8 @@ namespace KimiQuotaTray
             _tray.Text = ""; // 正常状态悬停不显示 tooltip；错误时由 SetError 设置原因
             _tray.ContextMenuStrip = BuildMenu(); // 右键 = 菜单（原始行为）
             _tray.MouseUp += OnTrayMouseUp;       // 左键 = 详情窗口
-            _tray.MouseDoubleClick += OnTrayDoubleClick;
+            // 不订阅 MouseDoubleClick：双击的第一击会触发左键 MouseUp 弹出详情窗口，
+            // 与「双击 = 立即刷新」冲突；刷新入口已由右键菜单提供，双击手势移除
             SetIcon("--", ColorGray);
             _tray.Visible = true;
 
@@ -397,12 +398,6 @@ namespace KimiQuotaTray
             ApplyAutoStart(_autoStartItem.Checked);
             _settings.AutoStart = _autoStartItem.Checked;
             SaveSettings();
-        }
-
-        private void OnTrayDoubleClick(object sender, MouseEventArgs e)
-        {
-            if (e.Button == MouseButtons.Left)
-                RefreshAsync(); // 双击 = 立即刷新
         }
 
         private void OnTrayMouseUp(object sender, MouseEventArgs e)
