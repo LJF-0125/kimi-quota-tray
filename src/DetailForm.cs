@@ -306,6 +306,7 @@ namespace KimiQuotaTray
                         ? _app.EstimateWeekly(_data.Usage) : null;
                     y += AddQuotaCard(pad, y, cardW, "周额度", _data.Usage, true,
                         weeklyEst != null ? weeklyEst.Text : null) + gap;
+                    y += AddWeeklyTrendCard(pad, y, cardW, _data.Usage) + gap; // v1.4：周额度趋势卡
                 }
                 if (_data.TotalQuota != null)
                     y += AddQuotaCard(pad, y, cardW, "月总额度", _data.TotalQuota, false, null) + gap;
@@ -477,6 +478,16 @@ namespace KimiQuotaTray
                     chart.EndUnix = now;
                     int? pct = TrayApp.Percent(w5); // 折线颜色与卡片/图标同一套阈值
                     chart.LineColor = pct.HasValue ? _app.ColorForPercent(pct.Value) : TrayApp.ColorGray;
+                    // v1.4：高亮当前滚动窗口覆盖的时间区域 = resetTime − window.duration 到 now
+                    // （时长取接口返回的 window.duration 分钟数，不写死 300；resetTime 缺失/解析失败则不画）
+                    var w5Item = TrayApp.FindWindow5h(_data);
+                    DateTimeOffset resetDto;
+                    long durationMin;
+                    if (w5Item != null && w5Item.Window != null &&
+                        TrayApp.TryParseLong(w5Item.Window.Duration, out durationMin) &&
+                        !string.IsNullOrEmpty(w5.ResetTime) &&
+                        DateTimeOffset.TryParse(w5.ResetTime, out resetDto))
+                        chart.HighlightFromUnix = resetDto.ToUnixTimeSeconds() - durationMin * 60;
                     // X 轴最近 6 小时；仅当 ETA 落在 6 小时内才画预测虚线，
                     // 且右端点延伸到 ETA（否则撞线点在未来，会画出绘图区右缘）
                     if (est != null && est.HasEta && est.EtaUnix > now && est.EtaUnix <= now + 6 * 3600)
@@ -495,6 +506,62 @@ namespace KimiQuotaTray
                 new Rectangle(pad, cy, innerW, Scale(16)),
                 _fontAux, FooterColor, ContentAlignment.MiddleLeft, Color.Transparent));
             cy += Scale(16);
+
+            int cardH = cy + pad;
+            card.Height = cardH;
+            AddContent(card);
+            return cardH;
+        }
+
+        // 「周额度趋势（近 7 天）」卡片（v1.4）：wku 序列，X 轴日期标签，不画 ETA 虚线/高亮区
+        private int AddWeeklyTrendCard(int x, int y, int w, QuotaDetail usage)
+        {
+            int pad = Scale(14);
+            int innerW = w - pad * 2;
+            int cy = pad;
+
+            var card = new CardPanel(Scale(8)) { Bounds = new Rectangle(x, y, w, 10) };
+            card.Controls.Add(MakeLabel("周额度趋势（近 7 天）", new Rectangle(pad, cy, innerW, Scale(16)),
+                _fontTitle, TitleColor, ContentAlignment.MiddleLeft, Color.Transparent));
+            cy += Scale(16) + Scale(4);
+
+            bool enabled = _app._settings.HistoryEnabled.GetValueOrDefault(true);
+
+            var chart = new TrendChartControl(_fontFooter);
+            chart.ScalePx = Scale;
+            chart.AxisTimeFormat = "MM-dd"; // 7 天跨度用日期标签
+            chart.Bounds = new Rectangle(pad, cy, innerW, Scale(80));
+            if (!enabled)
+            {
+                chart.Message = "历史记录已禁用";
+            }
+            else
+            {
+                long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                var pts = BurnEstimator.Downsample(_app.CollectPoints(now - 7 * 86400, false), 1000);
+                long limit;
+                if (!TrayApp.TryParseLong(usage.Limit, out limit) || limit <= 0)
+                {
+                    limit = 0; // 当前 limit 缺失时回退到历史记录里的最大值（同 5h 图）
+                    foreach (var s in _app.GetHistory())
+                        if (s.Wkl.HasValue && s.Wkl.Value > limit) limit = s.Wkl.Value;
+                }
+                if (limit <= 0 || pts.Count < 2)
+                {
+                    chart.Message = "数据积累中，约 10 分钟后出趋势";
+                }
+                else
+                {
+                    chart.Points = pts;
+                    chart.LimitValue = limit;
+                    chart.StartUnix = now - 7 * 86400;
+                    chart.EndUnix = now;
+                    int? pct = TrayApp.Percent(usage); // 折线颜色与卡片/图标同一套阈值
+                    chart.LineColor = pct.HasValue ? _app.ColorForPercent(pct.Value) : TrayApp.ColorGray;
+                }
+            }
+            card.Controls.Add(chart);
+            cy += Scale(80);
 
             int cardH = cy + pad;
             card.Height = cardH;
@@ -552,6 +619,22 @@ namespace KimiQuotaTray
                     bar.Bounds = new Rectangle(pad, cy, innerW, Scale(6));
                     card.Controls.Add(bar);
                     cy += Scale(6);
+                }
+
+                // v1.4：今日/本周 Extra 消费（历史禁用或无 ex 样本时不显示该行）
+                if (_app._settings.HistoryEnabled.GetValueOrDefault(true))
+                {
+                    long todayCents, weekCents;
+                    if (_app.TryGetExtraSpend(out todayCents, out weekCents))
+                    {
+                        cy += Scale(8);
+                        card.Controls.Add(MakeLabel(
+                            "今日消费 " + TrayApp.FmtYuanFromCents(todayCents) +
+                            " · 本周消费 " + TrayApp.FmtYuanFromCents(weekCents),
+                            new Rectangle(pad, cy, innerW, Scale(16)),
+                            _fontAux, TitleColor, ContentAlignment.MiddleLeft, Color.Transparent));
+                        cy += Scale(16);
+                    }
                 }
             }
 
@@ -642,7 +725,7 @@ namespace KimiQuotaTray
                 }
             }
         }
-        // 5小时窗口趋势折线图（v1.3）：Y 轴 0~limit，X 轴最近 6 小时（有 ETA 时延伸到 ETA）
+        // 趋势折线图（v1.3 起 5 小时窗口用，v1.4 起周额度复用）：Y 轴 0~limit
         internal sealed class TrendChartControl : Control
         {
             public List<BurnEstimator.SamplePoint> Points;
@@ -655,6 +738,8 @@ namespace KimiQuotaTray
             public double SlopePerMinute;
             public string Message; // 非空 → 居中灰字，不画图
             public Func<int, int> ScalePx; // 逻辑像素 → 物理像素（DetailForm.Scale），空则恒等
+            public string AxisTimeFormat = "HH:mm"; // X 轴两端时间标签格式（5h 图 HH:mm，7 天图 MM-dd）
+            public long? HighlightFromUnix; // v1.4：当前窗口高亮区起点（终点 = now），null 不画（周趋势卡不设置）
             private readonly Font _font;
 
             public TrendChartControl(Font font)
@@ -705,6 +790,21 @@ namespace KimiQuotaTray
                     return plot.Bottom - (float)(u / LimitValue * plot.Height);
                 };
 
+                // v1.4：当前窗口高亮区（resetTime − duration 到 now），背景层级，先画再画虚线/折线
+                if (HighlightFromUnix.HasValue)
+                {
+                    long nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                    float hx0 = mapX(HighlightFromUnix.Value);
+                    float hx1 = mapX(nowSec);
+                    if (hx0 < plot.Left) hx0 = plot.Left; // 起点早于图表左缘时裁剪
+                    if (hx1 > plot.Right) hx1 = plot.Right;
+                    if (hx1 > hx0)
+                    {
+                        using (var brush = new SolidBrush(Color.FromArgb(40, 0x22, 0xC5, 0x5E)))
+                            g.FillRectangle(brush, hx0, plot.Top, hx1 - hx0, plot.Height);
+                    }
+                }
+
                 // 上限虚线：顶部红色 #EF4444
                 using (var pen = new Pen(Color.FromArgb(0xEF, 0x44, 0x44)))
                 {
@@ -741,15 +841,15 @@ namespace KimiQuotaTray
                     }
                 }
 
-                // 轴标签：左上 limit 值、左下 0、底部左右端点时间（HH:mm）
+                // 轴标签：左上 limit 值、左下 0、底部左右端点时间（格式由 AxisTimeFormat 给定）
                 using (var brush = new SolidBrush(FooterColor))
                 {
                     g.DrawString(((long)LimitValue).ToString(), _font, brush, plot.Left, 0);
                     g.DrawString("0", _font, brush, plot.Left, plot.Bottom - textH);
                     string t0 = DateTimeOffset.FromUnixTimeSeconds(StartUnix)
-                        .LocalDateTime.ToString("HH:mm");
+                        .LocalDateTime.ToString(AxisTimeFormat);
                     string t1 = DateTimeOffset.FromUnixTimeSeconds(EndUnix)
-                        .LocalDateTime.ToString("HH:mm");
+                        .LocalDateTime.ToString(AxisTimeFormat);
                     g.DrawString(t0, _font, brush, plot.Left, plot.Bottom + 2);
                     var sz = g.MeasureString(t1, _font);
                     g.DrawString(t1, _font, brush, plot.Right - sz.Width, plot.Bottom + 2);

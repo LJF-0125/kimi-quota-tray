@@ -151,6 +151,8 @@ namespace KimiQuotaTray
         [DataMember(Name = "historyEnabled")] public bool? HistoryEnabled;   // 可空以区分「字段缺失」与「显式关闭」
         [DataMember(Name = "historyRetentionDays")] public int HistoryRetentionDays;
         [DataMember(Name = "estimateWindowMinutes")] public int EstimateWindowMinutes;
+        [DataMember(Name = "predictiveAlertEnabled")] public bool? PredictiveAlertEnabled; // 可空以区分「字段缺失」与「显式关闭」
+        [DataMember(Name = "predictiveAlertMinutes")] public int PredictiveAlertMinutes;   // 手改可调，不进菜单
 
         public Settings()
         {
@@ -165,6 +167,8 @@ namespace KimiQuotaTray
             HistoryEnabled = true;
             HistoryRetentionDays = 7;
             EstimateWindowMinutes = 60;
+            PredictiveAlertEnabled = true;
+            PredictiveAlertMinutes = 30;
         }
     }
 

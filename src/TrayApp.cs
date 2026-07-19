@@ -1,7 +1,7 @@
 // KimiQuotaTray —— Kimi Code 额度显示托盘工具（非官方第三方工具）
 // 设计规格见 docs 目录《计划书.md》系列文档。
 // .NET Framework 4.8 / C# 5（系统自带 csc.exe），src/ 多文件，无第三方依赖。
-// User-Agent 固定为 kimi-quota-tray/1.3，严禁伪装成 Kimi Code CLI。
+// User-Agent 固定为 kimi-quota-tray/1.4，严禁伪装成 Kimi Code CLI。
 #pragma warning disable 4014 // 有意 fire-and-forget 的 async 调用
 
 using System;
@@ -86,6 +86,8 @@ namespace KimiQuotaTray
         private ToolStripMenuItem _autoStartItem;
         private ToolStripMenuItem _refill5hItem;
         private ToolStripMenuItem _refillWeeklyItem;
+        private ToolStripMenuItem _predictiveAlertItem;
+        private bool _predictiveAlertActive; // 预测性预警：迟滞状态（预警态期间不重复弹）
 
         public TrayApp()
         {
@@ -145,6 +147,10 @@ namespace KimiQuotaTray
             copy.Click += delegate { CopySummary(); };
             menu.Items.Add(copy);
 
+            var export = new ToolStripMenuItem("导出历史数据 (CSV)");
+            export.Click += delegate { ExportHistoryCsv(); };
+            menu.Items.Add(export);
+
             var iconMenu = new ToolStripMenuItem("图标显示");
             AddRadio(iconMenu, _iconSourceItems, "5小时窗口", "window5h",
                 _settings.IconSource == "window5h", OnIconSourceClick);
@@ -172,6 +178,12 @@ namespace KimiQuotaTray
                 _settings.LowQuotaAlertThreshold == 20, OnAlertClick);
             AddRadio(alertMenu, _alertItems, "低于10%提醒", 10,
                 _settings.LowQuotaAlertThreshold == 10, OnAlertClick);
+            alertMenu.DropDownItems.Add(new ToolStripSeparator());
+            _predictiveAlertItem = new ToolStripMenuItem("预计耗尽提前预警");
+            _predictiveAlertItem.CheckOnClick = true;
+            _predictiveAlertItem.Checked = _settings.PredictiveAlertEnabled.GetValueOrDefault(true);
+            _predictiveAlertItem.Click += OnPredictiveAlertClick;
+            alertMenu.DropDownItems.Add(_predictiveAlertItem);
             menu.Items.Add(alertMenu);
 
             var refillMenu = new ToolStripMenuItem("回满提醒");
@@ -275,6 +287,13 @@ namespace KimiQuotaTray
             SaveSettings();
         }
 
+        private void OnPredictiveAlertClick(object sender, EventArgs e)
+        {
+            _settings.PredictiveAlertEnabled = _predictiveAlertItem.Checked;
+            if (!_predictiveAlertItem.Checked) _predictiveAlertActive = false; // 关闭期间回到安全态
+            SaveSettings();
+        }
+
         // 复制额度摘要：剪贴板偶发被占用，短重试 3 次后气泡提示结果
         private void CopySummary()
         {
@@ -293,6 +312,54 @@ namespace KimiQuotaTray
                 }
             }
             _tray.ShowBalloonTip(3000, "Kimi 额度", "复制失败，剪贴板被占用", ToolTipIcon.Warning);
+        }
+
+        // 导出历史数据 CSV（v1.4 功能4）：SaveFileDialog + AtomicWrite，UTF-8 带 BOM（Excel 不乱码）
+        private void ExportHistoryCsv()
+        {
+            var hist = GetHistory();
+            if (!_settings.HistoryEnabled.GetValueOrDefault(true) || hist.Count == 0)
+            {
+                _tray.ShowBalloonTip(2000, "Kimi 额度", "暂无历史数据", ToolTipIcon.Info);
+                return;
+            }
+            using (var dlg = new SaveFileDialog())
+            {
+                dlg.Filter = "CSV 文件|*.csv";
+                dlg.FileName = "kimi-quota-history-" + DateTime.Now.ToString("yyyyMMdd-HHmm") + ".csv";
+                if (dlg.ShowDialog() != DialogResult.OK) return; // 用户取消：静默
+
+                var sorted = new List<HistorySample>(hist);
+                sorted.Sort(delegate(HistorySample a, HistorySample b) { return a.T.CompareTo(b.T); });
+                // 字段均不含逗号/换行（resetTime 为 ISO 格式），无需转义
+                var sb = new StringBuilder("\uFEFF"); // BOM：AtomicWrite 用无 BOM 编码写入，串首的 \uFEFF 即 EF BB BF
+                sb.Append("time,window5h_used,window5h_limit,window5h_reset,weekly_used,weekly_limit,extra_balance_yuan\n");
+                foreach (var s in sorted)
+                {
+                    sb.Append(DateTimeOffset.FromUnixTimeSeconds(s.T).LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"));
+                    sb.Append(',').Append(s.W5u.HasValue ? s.W5u.Value.ToString() : "");
+                    sb.Append(',').Append(s.W5l.HasValue ? s.W5l.Value.ToString() : "");
+                    sb.Append(',').Append(s.W5r ?? ""); // 原始 ISO
+                    sb.Append(',').Append(s.Wku.HasValue ? s.Wku.Value.ToString() : "");
+                    sb.Append(',').Append(s.Wkl.HasValue ? s.Wkl.Value.ToString() : "");
+                    sb.Append(',');
+                    if (s.Ex.HasValue) // 1e-8 元整数 → 元，保留 2 位小数（整数运算避免浮点误差）
+                    {
+                        long ex = s.Ex.Value;
+                        sb.Append(ex / 100000000).Append('.').Append((ex % 100000000 / 1000000).ToString("00"));
+                    }
+                    sb.Append('\n');
+                }
+                try
+                {
+                    AtomicWrite(dlg.FileName, sb.ToString()); // 临时文件 + rename，与设置/历史写盘一致
+                    _tray.ShowBalloonTip(2000, "Kimi 额度", "已导出 " + sorted.Count + " 条记录", ToolTipIcon.Info);
+                }
+                catch
+                {
+                    _tray.ShowBalloonTip(3000, "Kimi 额度", "导出失败，请检查文件是否被占用", ToolTipIcon.Warning);
+                }
+            }
         }
 
         private void OnTrayMouseUp(object sender, MouseEventArgs e)
@@ -396,6 +463,7 @@ namespace KimiQuotaTray
                 _failCount = 0; // 成功：恢复原间隔
                 CheckRefillAlerts(data);
                 AppendHistory(data);   // 仅成功刷新后写历史；失败不写；先于渲染，图表/估算不滞后一个采样点
+                CheckPredictiveAlert(data); // 预测性预警读历史估算，须在 AppendHistory 之后
                 RenderData(data);
                 CacheLastGood(data);
                 CleanupHistoryIfDue(); // 之后每 24 小时清理一次过期记录
@@ -762,6 +830,38 @@ namespace KimiQuotaTray
             }
         }
 
+        // ===================== 预测性预警（v1.4 功能2，ETA 提前预警） =====================
+
+        // 每次成功刷新后执行（在 AppendHistory 之后，估算含最新样本）：
+        // ETA ≤ PredictiveAlertMinutes 进入预警态，边沿触发 + 迟滞（安全态 → 预警态跳变时才弹一次）
+        private void CheckPredictiveAlert(UsagesResponse u)
+        {
+            if (!_settings.PredictiveAlertEnabled.GetValueOrDefault(true)) return; // 开关关闭：不弹（安全态已由菜单点击复位）
+            if (!_settings.HistoryEnabled.GetValueOrDefault(true)) return; // 历史禁用：静默跳过
+            int minutes = _settings.PredictiveAlertMinutes;
+            if (minutes < 1) minutes = 30;
+            var est = EstimateWindow5h(FindWindow5hDetail(u)); // 样本不足时 HasEta=false，按安全处理
+            long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            bool alert = est.HasEta && est.EtaUnix - now <= (long)minutes * 60;
+            if (alert)
+            {
+                if (!_predictiveAlertActive)
+                {
+                    _predictiveAlertActive = true;
+                    int total = Math.Max(1, (int)Math.Round((est.EtaUnix - now) / 60.0)); // 不足 1 分钟显示 1，与 CountdownText 一致
+                    _tray.ShowBalloonTip(5000, "Kimi 额度提醒",
+                        "按当前速度，预计 " + total + " 分钟后耗尽（" +
+                        DateTimeOffset.FromUnixTimeSeconds(est.EtaUnix).LocalDateTime.ToString("HH:mm") +
+                        "），请放缓或开启 Extra",
+                        ToolTipIcon.Warning);
+                }
+            }
+            else
+            {
+                _predictiveAlertActive = false; // 斜率 ≤ epsilon（无风险）或 ETA 变远：回到安全态，可再次边沿触发
+            }
+        }
+
         // ===================== 回满提醒（额度恢复时通知） =====================
 
         // 每次成功刷新后与内存中上一轮成功数据对比；进程启动后首次成功刷新只建立基线不提醒
@@ -826,6 +926,8 @@ namespace KimiQuotaTray
             if (!s.HistoryEnabled.HasValue) s.HistoryEnabled = true; // 缺失 ≠ 显式关闭
             if (s.HistoryRetentionDays < 1) s.HistoryRetentionDays = 7;
             if (s.EstimateWindowMinutes < 5) s.EstimateWindowMinutes = 60;
+            if (!s.PredictiveAlertEnabled.HasValue) s.PredictiveAlertEnabled = true; // 缺失 ≠ 显式关闭
+            if (s.PredictiveAlertMinutes < 1) s.PredictiveAlertMinutes = 30;
             return s;
         }
 

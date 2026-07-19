@@ -169,6 +169,35 @@ namespace KimiQuotaTray
             return pts;
         }
 
+        // Extra 消费统计（v1.4 功能3）：消费 = 余额的正向下降量累加（充值造成的上升不计，不能拿首尾相减）
+        // 范围起点为本地时间今日 00:00 / 本周一 00:00；结果单位为分（1 分 = 10^6 原值）
+        // 返回 false = 无任何 ex 样本（该行不显示）；今日无消费返回 0 分（显示 ¥0）
+        internal bool TryGetExtraSpend(out long todayCents, out long weekCents)
+        {
+            todayCents = 0;
+            weekCents = 0;
+            var today = DateTime.Now.Date;
+            long todayFrom = new DateTimeOffset(today).ToUnixTimeSeconds();
+            int back = (int)today.DayOfWeek == 0 ? 6 : (int)today.DayOfWeek - 1; // DayOfWeek：Sunday=0
+            long weekFrom = new DateTimeOffset(today.AddDays(-back)).ToUnixTimeSeconds();
+            var exs = new List<HistorySample>();
+            foreach (var s in GetHistory())
+                if (s.Ex.HasValue) exs.Add(s);
+            if (exs.Count == 0) return false;
+            exs.Sort(delegate(HistorySample a, HistorySample b) { return a.T.CompareTo(b.T); });
+            long todayRaw = 0, weekRaw = 0;
+            for (int i = 1; i < exs.Count; i++)
+            {
+                long drop = exs[i - 1].Ex.Value - exs[i].Ex.Value;
+                if (drop <= 0) continue; // 充值/回涨不计消费
+                if (exs[i].T >= weekFrom) weekRaw += drop;
+                if (exs[i].T >= todayFrom) todayRaw += drop;
+            }
+            todayCents = todayRaw / 1000000;
+            weekCents = weekRaw / 1000000;
+            return true;
+        }
+
         // 5小时窗口：最近 EstimateWindowMinutes 分钟样本做 Theil-Sen，四档判定输出
         internal EstimateResult EstimateWindow5h(QuotaDetail w5)
         {

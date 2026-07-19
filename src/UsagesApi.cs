@@ -10,7 +10,7 @@ namespace KimiQuotaTray
 {
     internal sealed partial class TrayApp
     {
-        internal const string UserAgent = "kimi-quota-tray/1.3";
+        internal const string UserAgent = "kimi-quota-tray/1.4";
 
         internal static readonly string ApiBase = EnvOr("KIMI_CODE_BASE_URL", "https://api.kimi.com");
 
