@@ -92,7 +92,6 @@ namespace KimiQuotaTray
 
         [DataMember(Name = "usage")] public QuotaDetail Usage;              // 周额度
         [DataMember(Name = "limits")] public List<LimitItem> Limits;        // 各滚动窗口
-        [DataMember(Name = "totalQuota")] public QuotaDetail TotalQuota;    // 月总额
         [DataMember(Name = "boosterWallet")] public BoosterWallet BoosterWallet; // Extra Usage，可缺失
         [DataMember(Name = "parallel")] public ParallelInfo Parallel;       // 并行会话，可缺失
     }

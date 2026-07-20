@@ -332,8 +332,6 @@ namespace KimiQuotaTray
                         weeklyEst != null ? weeklyEst.Text : null) + gap;
                     y += AddWeeklyTrendCard(pad, y, cardW, _data.Usage) + gap; // v1.4：周额度趋势卡
                 }
-                if (_data.TotalQuota != null)
-                    y += AddQuotaCard(pad, y, cardW, "月总额度", _data.TotalQuota, false, null) + gap;
                 y += AddExtraCard(pad, y, cardW) + gap;
 
                 // v1.5：本机消耗（今日）卡片，Extra 卡下方；降级态（无事件文件/开关关闭）不显示
@@ -404,7 +402,7 @@ namespace KimiQuotaTray
             return l;
         }
 
-        // 额度卡片（5小时窗口 / 周额度 / 月总额度），返回卡片高度
+        // 额度卡片（5小时窗口 / 周额度），返回卡片高度
         // estimateLine：v1.3 周额度估算行，显示在重置行下一行；null 不显示
         private int AddQuotaCard(int x, int y, int w, string title, QuotaDetail d, bool showReset,
             string estimateLine)

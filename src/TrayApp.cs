@@ -788,11 +788,6 @@ namespace KimiQuotaTray
                 sb.Append("周额度: ").Append(Str(u.Usage.Remaining)).Append('/').Append(Str(u.Usage.Limit));
                 sb.Append("\n  重置: ").Append(FmtResetFull(u.Usage.ResetTime));
             }
-            if (u.TotalQuota != null)
-            {
-                if (sb.Length > 0) sb.Append('\n');
-                sb.Append("月总额度: ").Append(Str(u.TotalQuota.Remaining)).Append('/').Append(Str(u.TotalQuota.Limit));
-            }
             if (sb.Length > 0) sb.Append('\n');
             sb.Append("Extra余额: ").Append(ExtraDetail(u.BoosterWallet));
             if (u.Parallel != null)
