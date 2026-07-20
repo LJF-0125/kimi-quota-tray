@@ -1,7 +1,7 @@
 // KimiQuotaTray —— Kimi Code 额度显示托盘工具（非官方第三方工具）
 // 设计规格见 docs 目录《计划书.md》系列文档。
 // .NET Framework 4.8 / C# 5（系统自带 csc.exe），src/ 多文件，无第三方依赖。
-// User-Agent 固定为 kimi-quota-tray/1.4，严禁伪装成 Kimi Code CLI。
+// User-Agent 固定为 kimi-quota-tray/1.5，严禁伪装成 Kimi Code CLI。
 #pragma warning disable 4014 // 有意 fire-and-forget 的 async 调用
 
 using System;
@@ -88,6 +88,9 @@ namespace KimiQuotaTray
         private ToolStripMenuItem _refillWeeklyItem;
         private ToolStripMenuItem _predictiveAlertItem;
         private bool _predictiveAlertActive; // 预测性预警：迟滞状态（预警态期间不重复弹）
+        private ToolStripMenuItem _localMetricsItem;
+        private ToolStripMenuItem _metricsTooltipItem;
+        private bool _inError; // SetError 后 tooltip 被错误原因占用，悬停摘要不覆盖
 
         public TrayApp()
         {
@@ -120,6 +123,10 @@ namespace KimiQuotaTray
             // 冷启动：先用 lastGoodData 渲染一次，避免空窗，再立即刷新
             if (_settings.LastGoodData != null)
                 RenderData(_settings.LastGoodData);
+
+            // v1.5：本机消耗统计（默认开；events 目录不存在时功能内部降级，不影响主流程）
+            if (_settings.LocalMetricsEnabled.GetValueOrDefault(true))
+                StartLocalMetrics();
 
             _timer = new System.Windows.Forms.Timer();
             _timer.Interval = CurrentIntervalMs();
@@ -198,6 +205,18 @@ namespace KimiQuotaTray
             _refillWeeklyItem.Click += OnRefillClick;
             refillMenu.DropDownItems.Add(_refillWeeklyItem);
             menu.Items.Add(refillMenu);
+
+            // v1.5：本机消耗统计（一级勾选项，默认开）+ 子菜单悬停摘要（默认关）
+            _localMetricsItem = new ToolStripMenuItem("本机消耗统计");
+            _localMetricsItem.CheckOnClick = true;
+            _localMetricsItem.Checked = _settings.LocalMetricsEnabled.GetValueOrDefault(true);
+            _localMetricsItem.Click += OnLocalMetricsClick;
+            _metricsTooltipItem = new ToolStripMenuItem("悬停显示消耗摘要");
+            _metricsTooltipItem.CheckOnClick = true;
+            _metricsTooltipItem.Checked = _settings.TrayMetricsTooltipEnabled.GetValueOrDefault(false);
+            _metricsTooltipItem.Click += OnMetricsTooltipClick;
+            _localMetricsItem.DropDownItems.Add(_metricsTooltipItem);
+            menu.Items.Add(_localMetricsItem);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -292,6 +311,27 @@ namespace KimiQuotaTray
             _settings.PredictiveAlertEnabled = _predictiveAlertItem.Checked;
             if (!_predictiveAlertItem.Checked) _predictiveAlertActive = false; // 关闭期间回到安全态
             SaveSettings();
+        }
+
+        // v1.5：本机消耗统计总开关——关闭时停采集、释放句柄、卡片消失、tooltip 复原
+        private void OnLocalMetricsClick(object sender, EventArgs e)
+        {
+            _settings.LocalMetricsEnabled = _localMetricsItem.Checked;
+            SaveSettings();
+            if (_localMetricsItem.Checked)
+                StartLocalMetrics();
+            else
+                StopLocalMetrics();
+            if (!_inError) ApplyNormalTooltip(); // 错误态 tooltip 由 SetError 占用，不动
+            if (_detailForm != null && !_detailForm.IsDisposed && _detailForm.Visible)
+                _detailForm.SetData(_lastData); // 触发整窗重建，卡片出现/消失
+        }
+
+        private void OnMetricsTooltipClick(object sender, EventArgs e)
+        {
+            _settings.TrayMetricsTooltipEnabled = _metricsTooltipItem.Checked;
+            SaveSettings();
+            if (!_inError) ApplyNormalTooltip(); // 关闭或降级时 tooltip 恢复为空
         }
 
         // 复制额度摘要：剪贴板偶发被占用，短重试 3 次后气泡提示结果
@@ -514,7 +554,8 @@ namespace KimiQuotaTray
             Color color;
             ComputeIcon(u, out text, out color);
             SetIcon(text, color);
-            _tray.Text = ""; // 正常状态悬停不显示 tooltip（详情走左键窗口）；错误时由 SetError 设置原因
+            _inError = false;
+            ApplyNormalTooltip(); // 正常状态：悬停摘要开启时显示摘要，否则 tooltip 为空；错误时由 SetError 设置原因
             CheckAlert(u);
 
             // 详情窗口开着时同步最新数据
@@ -613,6 +654,7 @@ namespace KimiQuotaTray
 
         private void SetError(string reason)
         {
+            _inError = true;
             SetIcon("!", ColorGray);
             _tray.Text = TruncateTooltip("Kimi 额度: " + reason);
         }
@@ -928,6 +970,8 @@ namespace KimiQuotaTray
             if (s.EstimateWindowMinutes < 5) s.EstimateWindowMinutes = 60;
             if (!s.PredictiveAlertEnabled.HasValue) s.PredictiveAlertEnabled = true; // 缺失 ≠ 显式关闭
             if (s.PredictiveAlertMinutes < 1) s.PredictiveAlertMinutes = 30;
+            if (!s.LocalMetricsEnabled.HasValue) s.LocalMetricsEnabled = true;             // 缺失 = 默认开采集
+            if (!s.TrayMetricsTooltipEnabled.HasValue) s.TrayMetricsTooltipEnabled = false; // 缺失 = 默认关悬停
             return s;
         }
 
@@ -1048,6 +1092,7 @@ namespace KimiQuotaTray
         private void ExitApp()
         {
             SaveSettings();
+            StopLocalMetrics(); // v1.5：释放 watcher 句柄
             _timer.Stop();
             _tray.Visible = false;
             _tray.Dispose();

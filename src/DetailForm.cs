@@ -50,6 +50,10 @@ namespace KimiQuotaTray
         private readonly Font _fontFooter;  // 8pt
         private readonly Label _closeLabel;
         private readonly List<Control> _content = new List<Control>();
+        private readonly ToolTip _toolTip;
+        private Label _lmLine1;      // v1.5 本机消耗卡片的两行（重建时重指，事件到达时只改文本）
+        private Label _lmLine2;
+        private bool _lmCardShown;   // 本次重建是否含本机消耗卡片（出现/消失需整窗重排）
         private UsagesResponse _data;
         private int _dpi = 96; // 当前显示器真实 DPI（GetDpiForWindow），勿用 DeviceDpi（恒为 96）
 
@@ -74,6 +78,7 @@ namespace KimiQuotaTray
             _fontBig = new Font("Segoe UI", 18F, FontStyle.Bold);
             _fontAux = new Font("Segoe UI", 8.25F);
             _fontFooter = new Font("Segoe UI", 8F);
+            _toolTip = new ToolTip();
 
             var dummy = Handle; // 强制建句柄，GetDpiForWindow 才能拿到所在显示器的真实 DPI
             _dpi = TrayApp.GetDpiForWindow(Handle);
@@ -291,6 +296,9 @@ namespace KimiQuotaTray
                 c.Dispose();
             }
             _content.Clear();
+            _lmLine1 = null; // 本机消耗卡片随整窗重建重指
+            _lmLine2 = null;
+            _lmCardShown = false;
 
             int pad = Scale(14);
             int gap = Scale(10);
@@ -327,6 +335,11 @@ namespace KimiQuotaTray
                 if (_data.TotalQuota != null)
                     y += AddQuotaCard(pad, y, cardW, "月总额度", _data.TotalQuota, false, null) + gap;
                 y += AddExtraCard(pad, y, cardW) + gap;
+
+                // v1.5：本机消耗（今日）卡片，Extra 卡下方；降级态（无事件文件/开关关闭）不显示
+                var lmSnap = _app.GetLocalMetricsSnapshot();
+                if (lmSnap.Enabled && lmSnap.HasFiles)
+                    y += AddLocalMetricsCard(pad, y, cardW, lmSnap) + gap;
 
                 if (_data.Parallel != null)
                 {
@@ -660,12 +673,68 @@ namespace KimiQuotaTray
             return cardH;
         }
 
+        // 「本机消耗（今日）」卡片（v1.5）：本地事件日志统计，Extra 卡下方
+        // 数据源与口径见 docs/计划书-v1.5.md；事件到达时只改本卡片两行文本，不整窗重建
+        private int AddLocalMetricsCard(int x, int y, int w, LocalMetricsSnapshot snap)
+        {
+            int pad = Scale(14);
+            int innerW = w - pad * 2;
+            int cy = pad;
+
+            var card = new CardPanel(Scale(8)) { Bounds = new Rectangle(x, y, w, 10) };
+            card.Controls.Add(MakeLabel("本机消耗（今日）", new Rectangle(pad, cy, innerW, Scale(16)),
+                _fontTitle, TitleColor, ContentAlignment.MiddleLeft, Color.Transparent));
+            cy += Scale(16) + Scale(4);
+
+            _lmLine1 = MakeLabel(TrayApp.BuildLmLine1(snap),
+                new Rectangle(pad, cy, innerW, Scale(18)),
+                _fontAux, BigColor, ContentAlignment.MiddleLeft, Color.Transparent);
+            card.Controls.Add(_lmLine1);
+            cy += Scale(18) + Scale(2);
+
+            _lmLine2 = MakeLabel(TrayApp.BuildLmLine2(snap),
+                new Rectangle(pad, cy, innerW, Scale(16)),
+                _fontAux, FooterColor, ContentAlignment.MiddleLeft, Color.Transparent);
+            card.Controls.Add(_lmLine2);
+            cy += Scale(16);
+
+            // 准确性声明（计划书）：tooltip 文案依据
+            const string accuracy =
+                "统计的是 token 数，与额度接口的次数口径不同，两者不可对账；\n" +
+                "用户中止（Esc）的 step 无 usage 数据，约 2% 消耗不计入；\n" +
+                "速率为 60 秒滑动均值。";
+            _toolTip.SetToolTip(_lmLine1, accuracy);
+            _toolTip.SetToolTip(_lmLine2, accuracy);
+
+            int cardH = cy + pad;
+            card.Height = cardH;
+            AddContent(card);
+            _lmCardShown = true;
+            return cardH;
+        }
+
+        // 事件到达时的增量更新（TrayApp.BeginInvoke 进来）：卡片出现/消失才整窗重排，否则只改文本
+        internal void UpdateLocalMetrics(LocalMetricsSnapshot snap)
+        {
+            if (IsDisposed) return;
+            bool shouldShow = snap.Enabled && snap.HasFiles && _data != null;
+            if (shouldShow != _lmCardShown)
+            {
+                RebuildContent();
+                return;
+            }
+            if (!shouldShow || _lmLine1 == null || _lmLine2 == null) return;
+            _lmLine1.Text = TrayApp.BuildLmLine1(snap);
+            _lmLine2.Text = TrayApp.BuildLmLine2(snap);
+        }
+
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
                 // _content 中的控件都还在 Controls 里，由 base.Dispose 级联释放
                 _content.Clear();
+                _toolTip.Dispose();
                 _fontTitle.Dispose();
                 _fontBig.Dispose();
                 _fontAux.Dispose();

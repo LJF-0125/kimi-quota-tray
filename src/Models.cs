@@ -97,6 +97,64 @@ namespace KimiQuotaTray
         [DataMember(Name = "parallel")] public ParallelInfo Parallel;       // 并行会话，可缺失
     }
 
+    // ===================== 本机事件日志 DTO（v1.5，events/*.jsonl 逐行解析） =====================
+    // 与 /usages 同一原则：字段缺失容忍，未建模字段保留，字段漂移优雅降级
+
+    [DataContract]
+    internal sealed class LocalEventLine : IExtensibleDataObject
+    {
+        public ExtensionDataObject ExtensionData { get; set; }
+
+        [DataMember(Name = "envelope")] public LocalEventEnvelope Envelope;
+    }
+
+    [DataContract]
+    internal sealed class LocalEventEnvelope : IExtensibleDataObject
+    {
+        public ExtensionDataObject ExtensionData { get; set; }
+
+        [DataMember(Name = "type")] public string Type;             // 只取 turn.step.completed
+        [DataMember(Name = "session_id")] public string SessionId;
+        [DataMember(Name = "timestamp")] public string Timestamp;   // ISO 8601 UTC
+        [DataMember(Name = "payload")] public LocalEventPayload Payload;
+    }
+
+    [DataContract]
+    internal sealed class LocalEventPayload : IExtensibleDataObject
+    {
+        public ExtensionDataObject ExtensionData { get; set; }
+
+        [DataMember(Name = "stepId")] public string StepId;
+        [DataMember(Name = "sessionId")] public string SessionId;
+        [DataMember(Name = "usage")] public LocalEventUsage Usage;
+        [DataMember(Name = "llmFirstTokenLatencyMs")] public long? LlmFirstTokenLatencyMs; // TTFT，可缺失
+    }
+
+    [DataContract]
+    internal sealed class LocalEventUsage : IExtensibleDataObject
+    {
+        public ExtensionDataObject ExtensionData { get; set; }
+
+        [DataMember(Name = "inputOther")] public long InputOther;
+        [DataMember(Name = "output")] public long Output;
+        [DataMember(Name = "inputCacheRead")] public long InputCacheRead;
+        [DataMember(Name = "inputCacheCreation")] public long InputCacheCreation;
+    }
+
+    // 本机消耗统计快照（详情卡片 / tooltip 共用，见 LocalMetrics.cs）
+    internal sealed class LocalMetricsSnapshot
+    {
+        public bool Enabled;          // 菜单总开关
+        public bool HasFiles;         // events 目录存在且有 session 文件（false → 卡片不显示）
+        public bool HasTodayEvents;   // false → 显示「今日暂无对话」
+        public long TodayInput;       // Σ(inputOther + inputCacheRead + inputCacheCreation)
+        public long TodayOutput;
+        public long TodayCacheRead;
+        public int CacheHitPct;       // 今日输入为 0 时 -1（显示 —）
+        public int RateTokPerSec;     // 最近 60 秒滑动均值
+        public long? TtftMs;          // 最新一条事件的 TTFT，可缺失
+    }
+
     [DataContract]
     internal sealed class Credentials : IExtensibleDataObject
     {
@@ -153,6 +211,8 @@ namespace KimiQuotaTray
         [DataMember(Name = "estimateWindowMinutes")] public int EstimateWindowMinutes;
         [DataMember(Name = "predictiveAlertEnabled")] public bool? PredictiveAlertEnabled; // 可空以区分「字段缺失」与「显式关闭」
         [DataMember(Name = "predictiveAlertMinutes")] public int PredictiveAlertMinutes;   // 手改可调，不进菜单
+        [DataMember(Name = "localMetricsEnabled")] public bool? LocalMetricsEnabled;           // 可空：缺失 = 默认开采集
+        [DataMember(Name = "trayMetricsTooltipEnabled")] public bool? TrayMetricsTooltipEnabled; // 可空：缺失 = 默认关悬停
 
         public Settings()
         {
@@ -169,6 +229,8 @@ namespace KimiQuotaTray
             EstimateWindowMinutes = 60;
             PredictiveAlertEnabled = true;
             PredictiveAlertMinutes = 30;
+            LocalMetricsEnabled = true;
+            TrayMetricsTooltipEnabled = false;
         }
     }
 
