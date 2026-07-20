@@ -33,6 +33,7 @@ namespace KimiQuotaTray
         private const int ClassStyleDropShadow = 0x00020000; // CS_DROPSHADOW
         private const int WmNcHitTest = 0x84;
         private const int WmGetMinMaxInfo = 0x24;
+        private const int WmNcLButtonDblClk = 0xA3;
         private const int WmDpiChanged = 0x02E0;
         private const int HtCaption = 0x2;
         private const int HtClient = 0x1;
@@ -208,6 +209,20 @@ namespace KimiQuotaTray
         // 标题栏区域（✕ 除外）拖动整个窗口；左/右/下边缘 6px 为缩放热区
         protected override void WndProc(ref Message m)
         {
+            // 双击标题栏：恢复默认宽高，解决拉大后难以复原的问题
+            // 必须在 base.WndProc 之前拦截，否则默认处理会把双击当成“最大化”
+            if (m.Msg == WmNcLButtonDblClk && m.WParam.ToInt32() == HtCaption)
+            {
+                _app._settings.DetailWidth = DesignWidth;
+                _app._settings.DetailHeight = DesignHeight;
+                _app.SaveSettings();
+                if (WindowState != FormWindowState.Normal) WindowState = FormWindowState.Normal;
+                Width = Scale(DesignWidth);
+                Height = Scale(DesignHeight);
+                RebuildContent();
+                m.Result = IntPtr.Zero;
+                return;
+            }
             base.WndProc(ref m);
             // OnDpiChanged 在本运行时下不触发（DeviceDpi 恒为 96 的同一原因），直接处理 WM_DPICHANGED
             if (m.Msg == WmDpiChanged)
@@ -224,6 +239,7 @@ namespace KimiQuotaTray
             {
                 var mmi = (MinMaxInfo)Marshal.PtrToStructure(m.LParam, typeof(MinMaxInfo));
                 mmi.MinTrackSize = new Point(Scale(MinLogicalWidth), Scale(240));
+                mmi.MaxTrackSize = new Point(Scale(MaxLogicalWidth), Scale(MaxLogicalHeight));
                 Marshal.StructureToPtr(mmi, m.LParam, true);
                 return;
             }
